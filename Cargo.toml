@@ -3,4 +3,19 @@ name = "just-tic"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "just_tic"
+path = "src/lib.rs"
+
+[[bin]]
+name = "jtic"
+path = "src/main.rs"
+
 [dependencies]
+anyhow = "1.0.102"
+clap = { version = "4.6.1", features = ["derive"] }
+gix = { version = "0.84.0", features = ["blob-diff"] }
+jiff = "0.2.28"
+
+[dev-dependencies]
+tempfile = "3.27.0"
