@@ -242,3 +242,61 @@ fn excludes_commits_reachable_only_via_remote_tracking_refs() {
     assert_eq!(result.commits, 1);
     assert_eq!(result.additions, 2);
 }
+
+#[test]
+fn merge_commit_does_not_recount_its_branch() {
+    let repo_dir = init_repo();
+    let p = repo_dir.path();
+
+    // 어제 base(집계 제외)에서 두 브랜치가 갈라진다.
+    commit_file(p, "base.txt", "base\n", "2026-06-04T09:00:00+00:00");
+    git(p, &["branch", "feature"], None);
+
+    commit_file(p, "m.txt", "m1\nm2\n", "2026-06-05T09:00:00+00:00"); // main: 2줄
+    git(p, &["checkout", "feature"], None);
+    commit_file(p, "f.txt", "f1\nf2\nf3\n", "2026-06-05T10:00:00+00:00"); // feature: 3줄
+
+    // feature 를 main 에 머지 — --no-ff 로 머지 커밋을 강제 생성(오늘).
+    git(p, &["checkout", "main"], None);
+    git(
+        p,
+        &["merge", "--no-ff", "feature", "-m", "merge feature"],
+        Some("2026-06-05T11:00:00+00:00"),
+    );
+
+    let repo = gix::open(p).unwrap();
+    let result = just_tic::tally(&repo, now_utc(2026, 6, 5, 12, 0)).unwrap();
+
+    // 머지 미skip이면 머지 커밋이 f.txt(3줄)를 재카운트 → commits 3 / additions 8.
+    // 완전 제외하면 원본 m1·f1 만 → commits 2 / additions 5.
+    assert_eq!(result.commits, 2);
+    assert_eq!(result.additions, 5);
+}
+
+#[test]
+fn merge_authored_today_does_not_leak_yesterdays_work() {
+    let repo_dir = init_repo();
+    let p = repo_dir.path();
+
+    // 모든 원본 작업은 어제. 분기 → 양쪽 어제 커밋.
+    commit_file(p, "base.txt", "base\n", "2026-06-03T09:00:00+00:00");
+    git(p, &["branch", "feature"], None);
+    commit_file(p, "m.txt", "m1\nm2\n", "2026-06-04T09:00:00+00:00"); // main, 어제
+    git(p, &["checkout", "feature"], None);
+    commit_file(p, "f.txt", "f1\nf2\nf3\n", "2026-06-04T10:00:00+00:00"); // feature, 어제
+
+    // 머지 커밋만 오늘 author date.
+    git(p, &["checkout", "main"], None);
+    git(
+        p,
+        &["merge", "--no-ff", "feature", "-m", "merge feature"],
+        Some("2026-06-05T11:00:00+00:00"),
+    );
+
+    let repo = gix::open(p).unwrap();
+    let result = just_tic::tally(&repo, now_utc(2026, 6, 5, 12, 0)).unwrap();
+
+    // 머지(오늘)는 skip, 원본(어제)은 날짜로 제외 → 오늘 합계는 0.
+    // 미skip이면 머지가 f.txt(3줄)를 오늘로 끌어와 commits 1 / additions 3 이 된다.
+    assert_eq!(result, just_tic::Tally::default());
+}
