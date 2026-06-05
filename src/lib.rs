@@ -32,22 +32,35 @@ impl Tally {
 ///
 /// 시계는 호출자가 `now`로 주입한다 — 코어는 시계를 읽지 않는다.
 ///
-/// 이 슬라이스(#2)의 범위: HEAD reachable 히스토리만, 머지 커밋 포함, rename 미감지.
+/// 커밋 집합은 로컬 브랜치(`refs/heads/*`) 전체에서 reachable한 커밋을 commit id로
+/// dedup해 모은다(`refs/remotes/*` 제외). 머지 커밋은 아직 포함(skip은 #4), rename
+/// 미감지(#5).
 pub fn tally(repo: &gix::Repository, now: Zoned) -> anyhow::Result<Tally> {
     let window = Window::for_day(now);
     let mut total = Tally::default();
 
-    // 빈 레포(unborn HEAD)면 오늘 커밋이 없으므로 0/0/0.
-    let head = match repo.head_commit() {
-        Ok(commit) => commit,
-        Err(_) => return Ok(total),
-    };
+    // 로컬 브랜치(refs/heads/*) tip 전부를 순회 시작점으로 모은다.
+    // refs/remotes/*는 제외 — fetch로 들어온 커밋이 숫자를 부풀리지 못하게.
+    let mut tips: Vec<gix::ObjectId> = Vec::new();
+    for branch in repo.references()?.local_branches()? {
+        // local_branches 이터레이터의 에러는 Box<dyn Error>라 anyhow로 감싼다.
+        let branch = branch.map_err(anyhow::Error::msg)?;
+        tips.push(branch.into_fully_peeled_id()?.detach());
+    }
+
+    // 로컬 브랜치가 없으면(detached HEAD 등) HEAD로 폴백. HEAD도 없으면(빈 레포) 0/0/0.
+    if tips.is_empty() {
+        match repo.head_commit() {
+            Ok(commit) => tips.push(commit.id().detach()),
+            Err(_) => return Ok(total),
+        }
+    }
 
     // 블롭 라인 diff용 캐시 — 트리 순회 캐시와 별개로 한 번 만들어 재사용한다.
     let mut diff_cache = repo.diff_resource_cache_for_tree_diff()?;
 
-    // #2 범위: HEAD reachable 히스토리만. (로컬 브랜치 전체 dedup은 #3.)
-    for info in head.ancestors().all()? {
+    // 모든 tip에서 단일 multi-tip revwalk — 공유 커밋은 commit id로 한 번만 방문(dedup).
+    for info in repo.rev_walk(tips).all()? {
         let commit = repo.find_commit(info?.id)?;
 
         // author date(UTC 인스턴트)가 오늘 구간에 속하지 않으면 건너뛴다.
