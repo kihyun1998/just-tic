@@ -33,8 +33,8 @@ impl Tally {
 /// 시계는 호출자가 `now`로 주입한다 — 코어는 시계를 읽지 않는다.
 ///
 /// 커밋 집합은 로컬 브랜치(`refs/heads/*`) 전체에서 reachable한 커밋을 commit id로
-/// dedup해 모은다(`refs/remotes/*` 제외). 머지 커밋은 아직 포함(skip은 #4), rename
-/// 미감지(#5).
+/// dedup해 모은다(`refs/remotes/*` 제외). 머지 커밋(부모 2+)은 완전 제외한다
+/// (--no-merges). rename 미감지(#5).
 pub fn tally(repo: &gix::Repository, now: Zoned) -> anyhow::Result<Tally> {
     let window = Window::for_day(now);
     let mut total = Tally::default();
@@ -62,6 +62,13 @@ pub fn tally(repo: &gix::Repository, now: Zoned) -> anyhow::Result<Tally> {
     // 모든 tip에서 단일 multi-tip revwalk — 공유 커밋은 commit id로 한 번만 방문(dedup).
     for info in repo.rev_walk(tips).all()? {
         let commit = repo.find_commit(info?.id)?;
+
+        // 머지 커밋(부모 2개 이상)은 완전 제외 — numstat·commits 둘 다 빼고 건너뛴다.
+        // git log --no-merges와 일치. 머지가 가져온 줄은 원본 커밋에서 이미 세므로
+        // 재카운트를 막는다. (충돌 해결로 머지에만 있는 줄은 집계 안 됨 — 수용된 한계.)
+        if commit.parent_ids().take(2).count() > 1 {
+            continue;
+        }
 
         // author date(UTC 인스턴트)가 오늘 구간에 속하지 않으면 건너뛴다.
         let authored = Timestamp::from_second(commit.author()?.time()?.seconds)?;
