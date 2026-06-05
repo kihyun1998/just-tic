@@ -152,3 +152,93 @@ fn binary_file_contributes_zero() {
     assert_eq!(result.additions, 0);
     assert_eq!(result.deletions, 0);
 }
+
+#[test]
+fn sums_today_commits_across_diverged_branches() {
+    let repo_dir = init_repo();
+    let p = repo_dir.path();
+
+    // 공통 조상(어제, 집계 제외)에서 두 브랜치가 갈라진다.
+    commit_file(p, "base.txt", "base\n", "2026-06-04T09:00:00+00:00");
+    git(p, &["branch", "feature"], None);
+
+    // main 에만 있는 오늘 커밋 (2줄).
+    commit_file(p, "m.txt", "m1\nm2\n", "2026-06-05T09:00:00+00:00");
+
+    // feature 로 옮겨 main 에 없는 오늘 커밋 (3줄). HEAD 는 feature 에 남는다.
+    git(p, &["checkout", "feature"], None);
+    commit_file(p, "f.txt", "f1\nf2\nf3\n", "2026-06-05T10:00:00+00:00");
+
+    let repo = gix::open(p).unwrap();
+    let result = just_tic::tally(&repo, now_utc(2026, 6, 5, 12, 0)).unwrap();
+
+    // HEAD(feature)-only면 main 의 m1 을 놓쳐 3/1 이 된다.
+    // 로컬 브랜치 전체를 보면 양쪽 합 = 5/2 여야 한다.
+    assert_eq!(result.commits, 2);
+    assert_eq!(result.additions, 5);
+    assert_eq!(result.deletions, 0);
+}
+
+#[test]
+fn shared_ancestor_is_counted_once() {
+    let repo_dir = init_repo();
+    let p = repo_dir.path();
+
+    // 오늘 base 커밋을 두 브랜치가 공유한다.
+    commit_file(p, "base.txt", "b1\nb2\n", "2026-06-05T08:00:00+00:00");
+    git(p, &["branch", "feature"], None);
+
+    commit_file(p, "m.txt", "m1\nm2\n", "2026-06-05T09:00:00+00:00"); // main 전용
+    git(p, &["checkout", "feature"], None);
+    commit_file(p, "f.txt", "f1\nf2\n", "2026-06-05T10:00:00+00:00"); // feature 전용
+
+    let repo = gix::open(p).unwrap();
+    let result = just_tic::tally(&repo, now_utc(2026, 6, 5, 12, 0)).unwrap();
+
+    // base 가 두 번 세지면 commits 4 / additions 8 이 된다. dedup 되면 3 / 6.
+    assert_eq!(result.commits, 3);
+    assert_eq!(result.additions, 6);
+}
+
+#[test]
+fn detached_head_with_no_local_branches_falls_back_to_head() {
+    let repo_dir = init_repo();
+    let p = repo_dir.path();
+
+    commit_file(p, "c.txt", "c1\nc2\n", "2026-06-05T09:00:00+00:00");
+
+    // HEAD를 현재 커밋에서 분리하고 유일한 로컬 브랜치를 지운다 → refs/heads 비어 있음.
+    git(p, &["checkout", "--detach"], None);
+    git(p, &["branch", "-D", "main"], None);
+
+    let repo = gix::open(p).unwrap();
+    let result = just_tic::tally(&repo, now_utc(2026, 6, 5, 12, 0)).unwrap();
+
+    // 로컬 브랜치가 없어도 HEAD 폴백으로 오늘 커밋을 집계해야 한다.
+    assert_eq!(result.commits, 1);
+    assert_eq!(result.additions, 2);
+}
+
+#[test]
+fn excludes_commits_reachable_only_via_remote_tracking_refs() {
+    let repo_dir = init_repo();
+    let p = repo_dir.path();
+
+    // main: 로컬 오늘 커밋(2줄).
+    commit_file(p, "local.txt", "l1\nl2\n", "2026-06-05T09:00:00+00:00");
+
+    // tmp 브랜치에 오늘 커밋(3줄)을 만든 뒤, 그 tip을 remote-tracking ref로 옮기고
+    // tmp 로컬 브랜치를 지운다 → 이 커밋은 refs/remotes 로만 닿는다(fetch 흉내).
+    git(p, &["checkout", "-b", "tmp"], None);
+    commit_file(p, "remote_only.txt", "r1\nr2\nr3\n", "2026-06-05T10:00:00+00:00");
+    git(p, &["update-ref", "refs/remotes/origin/feature", "tmp"], None);
+    git(p, &["checkout", "main"], None);
+    git(p, &["branch", "-D", "tmp"], None);
+
+    let repo = gix::open(p).unwrap();
+    let result = just_tic::tally(&repo, now_utc(2026, 6, 5, 12, 0)).unwrap();
+
+    // remote-tracking 커밋은 제외 — main 의 로컬 커밋만 집계.
+    assert_eq!(result.commits, 1);
+    assert_eq!(result.additions, 2);
+}
