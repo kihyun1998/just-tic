@@ -75,6 +75,54 @@ fn discovers_repo_from_a_subdirectory() {
 }
 
 #[test]
+fn json_flag_prints_a_single_object_with_expected_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path();
+    git(p, &["init", "-b", "main"]);
+    git(p, &["config", "user.email", "t@example.com"]);
+    git(p, &["config", "user.name", "Test"]);
+
+    // author date 미지정 → 오늘 커밋. 2줄 추가.
+    std::fs::write(p.join("x.txt"), "a\nb\n").unwrap();
+    git(p, &["add", "x.txt"]);
+    git(p, &["commit", "-m", "today"]);
+
+    let out = jtic().arg("--json").current_dir(p).output().unwrap();
+
+    assert!(out.status.success(), "--json도 성공 경로는 종료코드 0");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let v: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("유효한 JSON이어야 한다");
+
+    assert!(v.is_object(), "단일 객체여야 한다: {stdout}");
+    assert!(
+        v.get("date").and_then(|d| d.as_str()).is_some(),
+        "date 키 필요: {stdout}"
+    );
+    assert_eq!(v["additions"], 2);
+    assert_eq!(v["deletions"], 0);
+    assert_eq!(v["commits"], 1);
+}
+
+#[test]
+fn json_flag_on_empty_repo_is_a_valid_zero_object() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path();
+    git(p, &["init", "-b", "main"]); // 커밋 없음
+
+    let out = jtic().arg("--json").current_dir(p).output().unwrap();
+
+    assert!(out.status.success(), "오늘 작업 없음은 에러가 아니다 (exit 0)");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let v: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("0커밋도 유효한 JSON");
+
+    assert_eq!(v["additions"], 0);
+    assert_eq!(v["deletions"], 0);
+    assert_eq!(v["commits"], 0);
+}
+
+#[test]
 fn empty_repo_prints_no_commits_message_and_exits_zero() {
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path();
