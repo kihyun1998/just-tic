@@ -30,6 +30,37 @@ fn git(dir: &Path, args: &[&str], date_rfc3339: Option<&str>) {
     );
 }
 
+/// `git`을 실행해 stdout을 캡처한다 (실패 시 panic). numstat 패리티 검증용.
+fn git_stdout(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .expect("git 실행 실패");
+    assert!(
+        out.status.success(),
+        "git {:?} 실패:\n{}",
+        args,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).expect("git stdout이 UTF-8이 아님")
+}
+
+/// `git ... --numstat` 출력에서 추가/삭제 합을 파싱한다. 바이너리('-')는 0 기여.
+fn numstat_sum(output: &str) -> (u64, u64) {
+    let (mut additions, mut deletions) = (0u64, 0u64);
+    for line in output.lines() {
+        let mut cols = line.split('\t');
+        let (Some(add), Some(del)) = (cols.next(), cols.next()) else {
+            continue;
+        };
+        // 바이너리 파일은 '-'/'-' → 0 기여.
+        additions += add.parse::<u64>().unwrap_or(0);
+        deletions += del.parse::<u64>().unwrap_or(0);
+    }
+    (additions, deletions)
+}
+
 /// 새 temp 레포를 만들고 초기 설정을 마친다.
 fn init_repo() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
@@ -299,4 +330,103 @@ fn merge_authored_today_does_not_leak_yesterdays_work() {
     // 머지(오늘)는 skip, 원본(어제)은 날짜로 제외 → 오늘 합계는 0.
     // 미skip이면 머지가 f.txt(3줄)를 오늘로 끌어와 commits 1 / additions 3 이 된다.
     assert_eq!(result, just_tic::Tally::default());
+}
+
+#[test]
+fn pure_rename_contributes_zero() {
+    let repo_dir = init_repo();
+    let p = repo_dir.path();
+
+    // 어제: 5줄 파일 생성(집계 제외).
+    commit_file(p, "old.txt", "a\nb\nc\nd\ne\n", "2026-06-04T09:00:00+00:00");
+
+    // 오늘: 내용 변화 없이 이름만 변경. rename 감지 OFF면 +5 -5 로 잡힌다.
+    git(p, &["mv", "old.txt", "new.txt"], None);
+    git(p, &["commit", "-m", "rename"], Some("2026-06-05T09:00:00+00:00"));
+
+    let repo = gix::open(p).unwrap();
+    let result = just_tic::tally(&repo, now_utc(2026, 6, 5, 12, 0)).unwrap();
+
+    assert_eq!(result.commits, 1);
+    assert_eq!(result.additions, 0, "순수 이동은 줄을 추가하지 않는다");
+    assert_eq!(result.deletions, 0, "순수 이동은 줄을 삭제하지 않는다");
+}
+
+#[test]
+fn rename_with_edits_counts_only_the_edits() {
+    let repo_dir = init_repo();
+    let p = repo_dir.path();
+
+    // 어제 베이스: 10줄(집계 제외).
+    commit_file(
+        p,
+        "old.txt",
+        "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n",
+        "2026-06-04T09:00:00+00:00",
+    );
+
+    // 오늘: 이름 변경 + 한 줄만 수정(3 → X). 90% 유사 → rename으로 인식.
+    git(p, &["mv", "old.txt", "new.txt"], None);
+    std::fs::write(p.join("new.txt"), "1\n2\nX\n4\n5\n6\n7\n8\n9\n10\n").unwrap();
+    git(p, &["add", "new.txt"], None);
+    git(p, &["commit", "-m", "rename+edit"], Some("2026-06-05T09:00:00+00:00"));
+
+    let repo = gix::open(p).unwrap();
+    let result = just_tic::tally(&repo, now_utc(2026, 6, 5, 12, 0)).unwrap();
+
+    // 3 → X: 추가 1 · 삭제 1. 전체 재추가(10/10)가 아니어야 한다.
+    assert_eq!(result.commits, 1);
+    assert_eq!(result.additions, 1);
+    assert_eq!(result.deletions, 1);
+
+    // git의 rename 인식 numstat과 일치해야 한다(criterion: jtic ≡ git log --numstat).
+    let head = git_stdout(p, &["rev-parse", "HEAD"]);
+    let numstat = git_stdout(p, &["show", "--numstat", "--format=", head.trim()]);
+    let (add, del) = numstat_sum(&numstat);
+    assert_eq!(
+        (result.additions, result.deletions),
+        (add, del),
+        "jtic 수치가 git numstat과 일치해야 한다"
+    );
+}
+
+#[test]
+fn rename_detection_ignores_ambient_diff_renames_config() {
+    let repo_dir = init_repo();
+    let p = repo_dir.path();
+
+    // 사용자가 rename 감지를 꺼 둔 환경을 흉내낸다. jtic은 이를 무시하고 항상 ON.
+    git(p, &["config", "diff.renames", "false"], None);
+
+    commit_file(p, "old.txt", "a\nb\nc\nd\ne\n", "2026-06-04T09:00:00+00:00");
+    git(p, &["mv", "old.txt", "new.txt"], None);
+    git(p, &["commit", "-m", "rename"], Some("2026-06-05T09:00:00+00:00"));
+
+    let repo = gix::open(p).unwrap();
+    let result = just_tic::tally(&repo, now_utc(2026, 6, 5, 12, 0)).unwrap();
+
+    // diff.renames=false를 따르면 +5 -5 로 잡힌다. jtic은 config 무관하게 0/0.
+    assert_eq!(result.additions, 0, "ambient diff.renames=false를 무시해야 한다");
+    assert_eq!(result.deletions, 0);
+}
+
+#[test]
+fn directory_move_does_not_inflate_numbers() {
+    let repo_dir = init_repo();
+    let p = repo_dir.path();
+
+    // 어제: src/ 아래 두 파일(집계 제외).
+    commit_file(p, "src/a.rs", "fn a() {}\n", "2026-06-04T09:00:00+00:00");
+    commit_file(p, "src/b.rs", "fn b() {}\n", "2026-06-04T09:10:00+00:00");
+
+    // 오늘: 디렉터리를 통째로 이동(내용 변화 없음). rename OFF면 +2 -2 로 튄다.
+    git(p, &["mv", "src", "lib"], None);
+    git(p, &["commit", "-m", "move dir"], Some("2026-06-05T09:00:00+00:00"));
+
+    let repo = gix::open(p).unwrap();
+    let result = just_tic::tally(&repo, now_utc(2026, 6, 5, 12, 0)).unwrap();
+
+    assert_eq!(result.commits, 1);
+    assert_eq!(result.additions, 0, "디렉터리 이동은 숫자를 부풀리지 않는다");
+    assert_eq!(result.deletions, 0);
 }

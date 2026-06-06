@@ -34,7 +34,8 @@ impl Tally {
 ///
 /// 커밋 집합은 로컬 브랜치(`refs/heads/*`) 전체에서 reachable한 커밋을 commit id로
 /// dedup해 모은다(`refs/remotes/*` 제외). 머지 커밋(부모 2+)은 완전 제외한다
-/// (--no-merges). rename 미감지(#5).
+/// (--no-merges). 커밋별 diff는 rename(유사도) 감지를 켠다 — 파일/폴더 이동이
+/// 줄 수를 부풀리지 않게(#5).
 pub fn tally(repo: &gix::Repository, now: Zoned) -> anyhow::Result<Tally> {
     let window = Window::for_day(now);
     let mut total = Tally::default();
@@ -93,7 +94,9 @@ pub fn tally(repo: &gix::Repository, now: Zoned) -> anyhow::Result<Tally> {
 /// 단위 change도 함께 낸다. tree는 blob diff가 불가하고 잎에서 이미 세므로 건너뛴다
 /// (이중 카운트 방지). 바이너리면 `line_counts()`가 `None` → 0 기여(자동 처리).
 ///
-/// 이 슬라이스(#2)는 rename을 감지하지 않는다(gix 기본). rename 감지는 #5.
+/// rename(유사도) 감지는 명시적으로 ON(#5). 이동된 파일은 Deletion+Addition이 단일
+/// Rewrite로 합쳐져, 순수 이동은 0/0·이동+수정은 변경분만 잡힌다. Rewrite도 잎 blob
+/// 변경이라 위 closure가 그대로 line diff를 계산한다.
 fn numstat_against_first_parent(
     repo: &gix::Repository,
     commit: &gix::Commit<'_>,
@@ -107,19 +110,25 @@ fn numstat_against_first_parent(
 
     let mut additions = 0u64;
     let mut deletions = 0u64;
-    old_tree
-        .changes()?
-        .for_each_to_obtain_tree(&new_tree, |change| {
-            let cont = std::ops::ControlFlow::Continue(());
-            if change.entry_mode().is_tree() {
-                return Ok::<_, Box<dyn std::error::Error + Send + Sync>>(cont);
-            }
-            if let Some(stats) = change.diff(diff_cache)?.line_counts()? {
-                additions += u64::from(stats.insertions);
-                deletions += u64::from(stats.removals);
-            }
-            Ok(cont)
-        })?;
+    let mut changes = old_tree.changes()?;
+    // rename(유사도) 감지를 명시적으로 ON. gix 기본은 ambient git config(diff.renames)를
+    // 따르므로 사용자가 그걸 꺼 두면 숫자가 어긋난다. `Default`는 git 기본과 같은
+    // 50% 유사도·복사 미추적이라 `git log --numstat` 기본 동작과 일치한다.
+    // 순수 이동은 단일 Rewrite로 합쳐져 0/0, 이동+수정은 변경분만 잡힌다.
+    changes.options(|opts| {
+        opts.track_rewrites(Some(Default::default()));
+    });
+    changes.for_each_to_obtain_tree(&new_tree, |change| {
+        let cont = std::ops::ControlFlow::Continue(());
+        if change.entry_mode().is_tree() {
+            return Ok::<_, Box<dyn std::error::Error + Send + Sync>>(cont);
+        }
+        if let Some(stats) = change.diff(diff_cache)?.line_counts()? {
+            additions += u64::from(stats.insertions);
+            deletions += u64::from(stats.removals);
+        }
+        Ok(cont)
+    })?;
     diff_cache.clear_resource_cache();
 
     Ok((additions, deletions))
