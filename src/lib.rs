@@ -19,7 +19,8 @@ pub struct Tally {
 }
 
 impl Tally {
-    /// 사람이 읽는 한 줄 출력. 색 없음 — 색 정책은 CLI(#6)에서 입힌다.
+    /// 사람이 읽는 plain 한 줄 출력(ANSI 색 없음). non-TTY/파이프·`NO_COLOR`용.
+    /// 색 적용 여부는 CLI(#6)가 환경을 보고 판단해 [`Self::to_human_line_colored`]와 고른다.
     ///
     /// 오늘 커밋이 없으면 빈 stdout 대신 명시적 메시지를 낸다(스크립트 안전).
     pub fn to_human_line(&self) -> String {
@@ -28,6 +29,21 @@ impl Tally {
         }
         format!(
             "+{} -{} · {} commits",
+            self.additions, self.deletions, self.commits
+        )
+    }
+
+    /// 색을 입힌 휴먼 한 줄. `+N`은 초록, `-N`은 빨강(ANSI). TTY일 때만 쓰인다.
+    ///
+    /// 색 적용 여부(TTY·`NO_COLOR`)는 호출자가 판단한다 — 코어는 환경을 모른다.
+    /// 0커밋 메시지는 카운트가 아닌 상태 문구라 색 없이 그대로 둔다([`Self::to_human_line`]와 동일).
+    pub fn to_human_line_colored(&self) -> String {
+        if self.commits == 0 {
+            return "+0 -0 · no commits today".to_string();
+        }
+        // \x1b[32m=초록, \x1b[31m=빨강, \x1b[0m=리셋. 각 카운트만 감싸고 나머지는 plain.
+        format!(
+            "\x1b[32m+{}\x1b[0m \x1b[31m-{}\x1b[0m · {} commits",
             self.additions, self.deletions, self.commits
         )
     }
@@ -196,6 +212,28 @@ mod tests {
     fn human_line_for_no_commits_is_explicit() {
         // 빈 stdout 대신 명시적 메시지(스크립트 안전).
         assert_eq!(Tally::default().to_human_line(), "+0 -0 · no commits today");
+    }
+
+    #[test]
+    fn colored_line_wraps_counts_in_green_and_red() {
+        let tally = Tally {
+            additions: 127,
+            deletions: 34,
+            commits: 5,
+        };
+        // +N=초록(32), -N=빨강(31), 커밋 수는 plain.
+        assert_eq!(
+            tally.to_human_line_colored(),
+            "\x1b[32m+127\x1b[0m \x1b[31m-34\x1b[0m · 5 commits"
+        );
+    }
+
+    #[test]
+    fn colored_line_for_no_commits_has_no_ansi() {
+        // 0커밋 상태 문구는 색 없이 plain — 휴먼 plain과 동일.
+        let line = Tally::default().to_human_line_colored();
+        assert_eq!(line, "+0 -0 · no commits today");
+        assert!(!line.contains('\x1b'), "0커밋 메시지엔 ANSI가 없어야 한다");
     }
 
     #[test]
