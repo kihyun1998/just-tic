@@ -52,6 +52,48 @@ fn prints_count_and_exits_zero_for_a_commit_today() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.starts_with('+'), "출력은 +로 시작해야 한다: {stdout}");
     assert!(stdout.contains("· 1 commits"), "오늘 커밋 1개 표시: {stdout}");
+    // output()은 stdout을 파이프로 캡처 → non-TTY → ANSI 색 코드가 없어야 한다.
+    assert!(
+        !stdout.contains('\x1b'),
+        "파이프 출력엔 ANSI 색이 없어야 한다: {stdout:?}"
+    );
+}
+
+#[test]
+fn piped_human_output_has_no_ansi_even_with_no_color_unset() {
+    // 파이프(non-TTY)면 NO_COLOR 설정과 무관하게 plain. 색은 TTY일 때만.
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path();
+    git(p, &["init", "-b", "main"]);
+    git(p, &["config", "user.email", "t@example.com"]);
+    git(p, &["config", "user.name", "Test"]);
+    std::fs::write(p.join("x.txt"), "a\nb\nc\n").unwrap();
+    git(p, &["add", "x.txt"]);
+    git(p, &["commit", "-m", "today"]);
+
+    // NO_COLOR를 명시적으로 제거해, plain의 원인이 NO_COLOR가 아니라 non-TTY임을 분명히 한다.
+    let out = jtic().env_remove("NO_COLOR").current_dir(p).output().unwrap();
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!stdout.contains('\x1b'), "파이프 출력은 plain: {stdout:?}");
+    assert!(stdout.starts_with("+3 -0 · 1 commits"), "plain 포맷: {stdout}");
+}
+
+#[test]
+fn json_output_never_contains_ansi() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path();
+    git(p, &["init", "-b", "main"]);
+    git(p, &["config", "user.email", "t@example.com"]);
+    git(p, &["config", "user.name", "Test"]);
+    std::fs::write(p.join("x.txt"), "a\nb\n").unwrap();
+    git(p, &["add", "x.txt"]);
+    git(p, &["commit", "-m", "today"]);
+
+    let out = jtic().arg("--json").current_dir(p).output().unwrap();
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!stdout.contains('\x1b'), "--json엔 색이 절대 없어야 한다: {stdout:?}");
 }
 
 #[test]
