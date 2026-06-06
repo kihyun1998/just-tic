@@ -3,10 +3,15 @@
 //! 코어는 시계를 직접 읽지 않는다 — 호출자가 `now`를 주입한다. 그래야 테스트가
 //! 고정된 시각으로 자정 경계·DST를 결정적으로 검증할 수 있다.
 
+use jiff::civil::Date;
 use jiff::{Timestamp, Zoned};
+use serde::Serialize;
 
 /// 오늘 합산 결과: 추가/삭제 줄 수와 집계에 포함된 커밋 수.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+///
+/// `Serialize` 파생은 `--json` 출력(#5)을 위한 것이자, 코어 반환 타입을 직렬화
+/// 가능한 깨끗한 구조체로 강제한다(미래 Tauri 재사용에도 이득).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 pub struct Tally {
     pub additions: u64,
     pub deletions: u64,
@@ -25,6 +30,27 @@ impl Tally {
             "+{} -{} · {} commits",
             self.additions, self.deletions, self.commits
         )
+    }
+
+    /// `--json` 출력 한 줄. `date`(로컬 "오늘" 날짜) + 합산 필드를 단일 객체로 낸다:
+    /// `{"date":"2026-06-05","additions":127,"deletions":34,"commits":5}`.
+    ///
+    /// 날짜는 `Tally`에 없으므로(코어는 시계를 모름) 호출자가 로컬 날짜를 주입한다.
+    /// 0커밋이어도 유효한 객체(필드 전부 0)를 낸다 — 스크립트/`jq` 안전.
+    pub fn to_json_line(&self, date: Date) -> String {
+        // 날짜를 먼저 둔 한 줄 객체를 만들기 위해 Tally를 flatten한 뷰를 직렬화한다.
+        #[derive(Serialize)]
+        struct JsonView<'a> {
+            date: String,
+            #[serde(flatten)]
+            tally: &'a Tally,
+        }
+        let view = JsonView {
+            date: date.to_string(),
+            tally: self,
+        };
+        // 직렬화 대상이 String·u64뿐이라 실패하지 않는다.
+        serde_json::to_string(&view).expect("Tally JSON 직렬화는 실패하지 않는다")
     }
 }
 
@@ -179,6 +205,29 @@ mod tests {
     fn human_line_for_no_commits_is_explicit() {
         // 빈 stdout 대신 명시적 메시지(스크립트 안전).
         assert_eq!(Tally::default().to_human_line(), "+0 -0 · no commits today");
+    }
+
+    #[test]
+    fn json_line_is_a_single_object_with_date_first() {
+        // 출력 계약 스냅샷 — 키·순서·형식을 고정해 회귀를 막는다.
+        let tally = Tally {
+            additions: 127,
+            deletions: 34,
+            commits: 5,
+        };
+        assert_eq!(
+            tally.to_json_line(date(2026, 6, 5)),
+            r#"{"date":"2026-06-05","additions":127,"deletions":34,"commits":5}"#
+        );
+    }
+
+    #[test]
+    fn json_line_for_no_commits_is_still_a_valid_object() {
+        // 0커밋이어도 빈 출력이 아니라 필드 전부 0인 유효 객체(jq 안전).
+        assert_eq!(
+            Tally::default().to_json_line(date(2026, 6, 5)),
+            r#"{"date":"2026-06-05","additions":0,"deletions":0,"commits":0}"#
+        );
     }
 
     #[test]

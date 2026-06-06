@@ -11,7 +11,11 @@ use clap::Parser;
 /// 오늘 추가/삭제한 줄 수(+/-)를 git 히스토리에서 합산해 보여준다.
 #[derive(Parser)]
 #[command(name = "jtic", version, about)]
-struct Cli {}
+struct Cli {
+    /// 기계 판독용 단일 JSON 객체로 출력한다 (상태바·jq 연동).
+    #[arg(long)]
+    json: bool,
+}
 
 fn main() -> ExitCode {
     match run() {
@@ -24,7 +28,7 @@ fn main() -> ExitCode {
 }
 
 fn run() -> anyhow::Result<()> {
-    let _cli = Cli::parse();
+    let cli = Cli::parse();
 
     // 현재 위치에서 상위로 올라가며 레포를 찾는다.
     let repo = gix::discover(".")
@@ -32,8 +36,14 @@ fn run() -> anyhow::Result<()> {
 
     // 시스템 로컬 타임존의 현재 시각 — 코어에 주입한다.
     let now = jiff::Zoned::now();
+    // JSON의 `date`는 로컬 "오늘" 날짜 — Window 하한과 같은 기준.
+    let today = now.date();
 
     let tally = just_tic::tally(&repo, now)?;
-    println!("{}", tally.to_human_line());
+    if cli.json {
+        println!("{}", tally.to_json_line(today));
+    } else {
+        println!("{}", tally.to_human_line());
+    }
     Ok(())
 }
