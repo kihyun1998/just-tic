@@ -1,0 +1,32 @@
+name: ci
+
+# master로의 push와 모든 PR에서 lint + 테스트를 돌린다. 회귀를 머지 전에 잡는다.
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# 한 PR에 연속 push가 들어오면 이전 실행을 취소해 러너를 아낀다.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: clippy + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: rustup update stable && rustup component add clippy
+
+      # 경고를 에러로 승격 — clippy 경고가 있으면 CI 실패.
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test

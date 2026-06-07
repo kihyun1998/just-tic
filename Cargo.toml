@@ -1,7 +1,15 @@
 [package]
 name = "just-tic"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
+description = "오늘(로컬 타임존 자정~지금) git 커밋들에서 추가/삭제한 줄 수(+/-)를 한 줄로 보여주는 CLI"
+authors = ["Ki Hyun Park"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/kihyun1998/just-tic"
+homepage = "https://github.com/kihyun1998/just-tic"
+readme = "README.md"
+keywords = ["git", "cli", "numstat", "productivity", "stats"]
+categories = ["command-line-utilities", "development-tools"]
 
 [lib]
 name = "just_tic"
@@ -21,3 +29,12 @@ serde_json = "1.0.150"
 
 [dev-dependencies]
 tempfile = "3.27.0"
+
+# 배포 바이너리 프로필 — 크기·속도 최적화. (GitHub Releases에 올라가는 산출물)
+# strip: 디버그 심볼 제거(바이너리 크기 ↓). lto/codegen-units=1: 링크 타임 최적화.
+# panic="abort": unwind 테이블 제거로 추가 축소 — CLI라 패닉 시 복구할 일이 없다.
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+panic = "abort"
