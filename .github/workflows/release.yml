@@ -32,7 +32,7 @@ jobs:
             os: windows-latest
             archive: zip
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         run: rustup update stable && rustup target add ${{ matrix.target }}
@@ -67,6 +67,6 @@ jobs:
       # 태그 이름(v1.0.0)으로 릴리스를 만들고(없으면) 이 잡의 아카이브를 첨부한다.
       # 4개 잡이 같은 릴리스에 각자 자산을 올린다.
       - name: Upload to GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: ${{ env.ASSET }}
