@@ -204,3 +204,59 @@ fn man_prints_roff_and_exits_zero_without_a_repo() {
     // roff man page는 .TH 헤더로 시작하고 바이너리 이름을 담는다.
     assert!(stdout.contains(".TH jtic"), "roff man page여야 한다: {stdout}");
 }
+
+#[test]
+fn since_includes_older_commits_outside_today() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path();
+    git(p, &["init", "-b", "main"]);
+    git(p, &["config", "user.email", "t@example.com"]);
+    git(p, &["config", "user.name", "Test"]);
+
+    // author date가 과거인 커밋(2줄) — "오늘"엔 안 잡힌다.
+    std::fs::write(p.join("old.txt"), "a\nb\n").unwrap();
+    git(p, &["add", "old.txt"]);
+    git(p, &["commit", "-m", "old", "--date=2001-06-15T12:00:00"]);
+
+    // 오늘 커밋(3줄).
+    std::fs::write(p.join("new.txt"), "x\ny\nz\n").unwrap();
+    git(p, &["add", "new.txt"]);
+    git(p, &["commit", "-m", "today"]);
+
+    // 기본: 오늘 것만 (1 commit).
+    let default = jtic().current_dir(p).output().unwrap();
+    let d = String::from_utf8_lossy(&default.stdout);
+    assert!(d.contains("· 1 commits"), "기본은 오늘 1커밋이어야: {d}");
+
+    // --since 2000-01-01: 과거 커밋도 포함 (2 commits).
+    let since = jtic()
+        .current_dir(p)
+        .args(["--since", "2000-01-01"])
+        .output()
+        .unwrap();
+    assert!(since.status.success());
+    let s = String::from_utf8_lossy(&since.stdout);
+    assert!(s.contains("· 2 commits"), "--since는 과거 커밋도 포함해야: {s}");
+}
+
+#[test]
+fn invalid_since_errors_with_nonzero_exit() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path();
+    git(p, &["init", "-b", "main"]);
+    git(p, &["config", "user.email", "t@example.com"]);
+    git(p, &["config", "user.name", "Test"]);
+    std::fs::write(p.join("x.txt"), "x\n").unwrap();
+    git(p, &["add", "x.txt"]);
+    git(p, &["commit", "-m", "c"]);
+
+    let out = jtic()
+        .current_dir(p)
+        .args(["--since", "nope"])
+        .output()
+        .unwrap();
+
+    assert!(!out.status.success(), "잘못된 --since는 비0 종료여야 한다");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--since"), "에러에 --since 언급 필요: {stderr}");
+}
