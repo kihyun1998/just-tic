@@ -14,5 +14,5 @@ When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the 
 
 Edit the right-hand column to match whatever vocabulary you actually use.
 
-> These five labels do not exist on the GitHub repo yet. Create them once (e.g.
-> `gh label create needs-triage`, etc.) so the `triage` skill can apply them without creating duplicates.
+> All five labels exist on the GitHub repo, so the `triage` skill can apply them without
+> creating duplicates.
