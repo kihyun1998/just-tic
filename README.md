@@ -71,6 +71,30 @@ $ jtic | grep +   # 파이프 → ANSI 색 코드 없음
 $ NO_COLOR=1 jtic # 색 끔
 ```
 
+### 셸 자동완성 · man page
+
+clap 정의에서 파생해 생성하므로 항상 최신 플래그와 동기화됩니다.
+
+```console
+$ jtic completions bash   # bash | zsh | fish | powershell | elvish
+$ jtic man                # roff man page
+```
+
+설치 예시:
+
+```bash
+# bash 자동완성
+jtic completions bash > ~/.local/share/bash-completion/completions/jtic
+
+# man page
+jtic man > ~/.local/share/man/man1/jtic.1
+```
+
+```powershell
+# PowerShell 자동완성 (프로필에 추가)
+jtic completions powershell | Out-String | Invoke-Expression
+```
+
 ## "오늘"은 어떻게 정의되나
 
 - **경계**: 머신 **로컬 타임존**의 `[오늘 자정, 지금)` 반열림 구간. 자정 정각 커밋은 포함, 현재 시각은 제외.

@@ -7,7 +7,7 @@ use std::io::IsTerminal;
 use std::process::ExitCode;
 
 use anyhow::Context;
-use clap::Parser;
+use clap::{CommandFactory, Parser, Subcommand};
 
 /// 오늘 추가/삭제한 줄 수(+/-)를 git 히스토리에서 합산해 보여준다.
 #[derive(Parser)]
@@ -16,6 +16,22 @@ struct Cli {
     /// 기계 판독용 단일 JSON 객체로 출력한다 (상태바·jq 연동).
     #[arg(long)]
     json: bool,
+
+    /// 보조 서브커맨드. 없으면 기본 동작(오늘 합산 출력).
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+/// 집계와 무관한 보조 명령(셸 자동완성·man page 생성). git 레포가 필요 없다.
+#[derive(Subcommand)]
+enum Command {
+    /// 셸 자동완성 스크립트를 stdout에 출력한다 (예: `jtic completions bash`).
+    Completions {
+        /// 대상 셸 (bash, zsh, fish, powershell, elvish).
+        shell: clap_complete::Shell,
+    },
+    /// man page(roff)를 stdout에 출력한다 (예: `jtic man > jtic.1`).
+    Man,
 }
 
 fn main() -> ExitCode {
@@ -30,6 +46,11 @@ fn main() -> ExitCode {
 
 fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
+
+    // 보조 명령은 git 레포 없이도 동작 — 레포 탐색 전에 처리하고 종료한다.
+    if let Some(command) = &cli.command {
+        return emit(command);
+    }
 
     // 현재 위치에서 상위로 올라가며 레포를 찾는다.
     let repo = gix::discover(".")
@@ -48,6 +69,23 @@ fn run() -> anyhow::Result<()> {
         println!("{}", tally.to_human_line_colored());
     } else {
         println!("{}", tally.to_human_line());
+    }
+    Ok(())
+}
+
+/// 보조 명령(셸 자동완성·man page)을 생성해 stdout에 출력한다.
+///
+/// 생성물은 clap 정의(`Cli`)에서 파생되므로 플래그가 바뀌면 자동으로 동기화된다 — 수동
+/// 작성이 아니다. 집계 로직과 무관해 git 레포 없이 동작한다([`Command`] 처리 시점).
+fn emit(command: &Command) -> anyhow::Result<()> {
+    let mut cmd = Cli::command();
+    match command {
+        Command::Completions { shell } => {
+            clap_complete::generate(*shell, &mut cmd, "jtic", &mut std::io::stdout());
+        }
+        Command::Man => {
+            clap_mangen::Man::new(cmd).render(&mut std::io::stdout())?;
+        }
     }
     Ok(())
 }

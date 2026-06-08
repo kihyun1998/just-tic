@@ -176,3 +176,31 @@ fn empty_repo_prints_no_commits_message_and_exits_zero() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(stdout.trim_end(), "+0 -0 · no commits today");
 }
+
+#[test]
+fn completions_print_a_script_and_exit_zero_without_a_repo() {
+    // 보조 명령은 git 레포가 없어도 동작해야 한다 — temp(레포 아님)에서 실행.
+    let dir = tempfile::tempdir().unwrap();
+
+    let out = jtic()
+        .current_dir(dir.path())
+        .args(["completions", "bash"])
+        .output()
+        .unwrap();
+
+    assert!(out.status.success(), "completions는 레포 밖에서도 exit 0");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("_jtic"), "bash 자동완성 함수가 있어야 한다: {stdout}");
+}
+
+#[test]
+fn man_prints_roff_and_exits_zero_without_a_repo() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let out = jtic().current_dir(dir.path()).arg("man").output().unwrap();
+
+    assert!(out.status.success(), "man은 레포 밖에서도 exit 0");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // roff man page는 .TH 헤더로 시작하고 바이너리 이름을 담는다.
+    assert!(stdout.contains(".TH jtic"), "roff man page여야 한다: {stdout}");
+}
