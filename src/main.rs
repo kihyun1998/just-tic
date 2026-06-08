@@ -27,6 +27,15 @@ struct Cli {
     #[arg(long, value_name = "GLOB")]
     exclude: Vec<String>,
 
+    /// 머지 커밋을 제외하지 않고 first-parent diff로 집계한다(순회도 first-parent만 따름).
+    /// 기본은 머지 제외(--no-merges).
+    #[arg(long)]
+    first_parent: bool,
+
+    /// "오늘" 판정을 author date 대신 committer date로 한다. 기본은 author date.
+    #[arg(long)]
+    committer_date: bool,
+
     /// 보조 서브커맨드. 없으면 기본 동작(오늘 합산 출력).
     #[command(subcommand)]
     command: Option<Command>,
@@ -78,7 +87,15 @@ fn run() -> anyhow::Result<()> {
     };
     // --exclude glob들을 매처로 컴파일해 코어에 주입 (ADR-0006: 매칭 정책은 CLI 몫).
     let exclude = build_exclude(&cli.exclude)?;
-    let tally = just_tic::tally_in(&repo, &window, &exclude)?;
+    let tally = just_tic::tally_in(
+        &repo,
+        &window,
+        &just_tic::Options {
+            exclude: &exclude,
+            first_parent: cli.first_parent,
+            committer_date: cli.committer_date,
+        },
+    )?;
     if cli.json {
         // JSON은 항상 색 없음 — 기계 판독·jq 안전.
         println!("{}", tally.to_json_line(today));

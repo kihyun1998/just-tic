@@ -72,6 +72,18 @@ $ jtic --exclude '**/*.lock' --exclude '**/*.min.js'   # 여러 glob
 
 glob은 레포 루트 기준 경로 전체에 매칭되고, `*`는 `/`를 넘지 않습니다 — 중첩 경로는 `**`를 쓰세요(`**/Cargo.lock`). 매칭된 파일의 줄 기여는 0이 되지만, 커밋 수에는 영향이 없습니다.
 
+### 기준 토글 — `--first-parent` · `--committer-date`
+
+기본 동작을 바꾸는 토글입니다.
+
+```console
+$ jtic --committer-date   # "오늘"을 author date 대신 committer date로 판정
+$ jtic --first-parent     # 머지 커밋을 skip하지 않고 first-parent diff로 집계
+```
+
+- **`--committer-date`**: 어제 작성(author)했지만 오늘 rebase/amend한(committer) 커밋을 "오늘"로 보고 싶을 때.
+- **`--first-parent`**: 머지 커밋을 제외하는 대신, 머지가 가져온 순변경을 first-parent diff로 셉니다. 순회도 first-parent 체인만 따라가 사이드 브랜치 커밋을 따로 세지 않습니다.
+
 ### `--json`
 
 상태바(tmux/starship/polybar)나 `jq` 연동을 위한 기계 판독 출력:
