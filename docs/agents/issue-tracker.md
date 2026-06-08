@@ -13,8 +13,8 @@ Issues and PRDs for this repo live as GitHub issues. Use the `gh` CLI for all op
 
 Infer the repo from `git remote -v` — `gh` does this automatically when run inside a clone.
 
-> Note: this clone currently has no git remote. Create the repo on GitHub and add it as a remote
-> (e.g. `gh repo create` or `git remote add origin <url>`) before these commands will have a target.
+The `origin` remote points at <https://github.com/kihyun1998/just-tic>, so the `gh` commands above
+target it automatically when run inside this clone.
 
 ## When a skill says "publish to the issue tracker"
 
