@@ -61,6 +61,17 @@ $ jtic --since 2w           # 지난 2주 (롤링)
 - **`YYYY-MM-DD`**: 그 날 로컬 자정을 하한으로 (달력 경계).
 - **`Nd` / `Nh` / `Nw`**: 지금부터 N일/시간/주 전까지 (절대 기간 롤링, DST 무관).
 
+### `--exclude` — 잡음 제외
+
+generated/lock 파일이 줄 수를 부풀리는 걸 막습니다. 경로 glob을 반복 지정할 수 있습니다.
+
+```console
+$ jtic --exclude Cargo.lock                      # 그 파일 제외
+$ jtic --exclude '**/*.lock' --exclude '**/*.min.js'   # 여러 glob
+```
+
+glob은 레포 루트 기준 경로 전체에 매칭되고, `*`는 `/`를 넘지 않습니다 — 중첩 경로는 `**`를 쓰세요(`**/Cargo.lock`). 매칭된 파일의 줄 기여는 0이 되지만, 커밋 수에는 영향이 없습니다.
+
 ### `--json`
 
 상태바(tmux/starship/polybar)나 `jq` 연동을 위한 기계 판독 출력:

@@ -260,3 +260,58 @@ fn invalid_since_errors_with_nonzero_exit() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("--since"), "에러에 --since 언급 필요: {stderr}");
 }
+
+#[test]
+fn exclude_glob_removes_matching_files_from_the_count() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path();
+    git(p, &["init", "-b", "main"]);
+    git(p, &["config", "user.email", "t@example.com"]);
+    git(p, &["config", "user.name", "Test"]);
+
+    // 한 커밋에 코드 3줄 + lock 5줄.
+    std::fs::write(p.join("code.rs"), "1\n2\n3\n").unwrap();
+    std::fs::write(p.join("Cargo.lock"), "a\nb\nc\nd\ne\n").unwrap();
+    git(p, &["add", "."]);
+    git(p, &["commit", "-m", "today"]);
+
+    // 기본: 8줄 전부.
+    let all = jtic().arg("--json").current_dir(p).output().unwrap();
+    let all: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&all.stdout).trim()).unwrap();
+    assert_eq!(all["additions"], 8, "기본은 전부 합산");
+
+    // Cargo.lock 제외: 코드 3줄만, 커밋 수는 그대로.
+    let out = jtic()
+        .args(["--json", "--exclude", "Cargo.lock"])
+        .current_dir(p)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).unwrap();
+    assert_eq!(v["additions"], 3, "--exclude는 Cargo.lock 줄을 빼야 함");
+    assert_eq!(v["commits"], 1, "파일만 제외 — 커밋 수는 불변");
+}
+
+#[test]
+fn invalid_exclude_glob_errors_with_nonzero_exit() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path();
+    git(p, &["init", "-b", "main"]);
+    git(p, &["config", "user.email", "t@example.com"]);
+    git(p, &["config", "user.name", "Test"]);
+    std::fs::write(p.join("x.txt"), "x\n").unwrap();
+    git(p, &["add", "x.txt"]);
+    git(p, &["commit", "-m", "c"]);
+
+    let out = jtic()
+        .args(["--exclude", "["])
+        .current_dir(p)
+        .output()
+        .unwrap();
+
+    assert!(!out.status.success(), "잘못된 glob은 비0 종료여야 한다");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--exclude"), "에러에 --exclude 언급 필요: {stderr}");
+}

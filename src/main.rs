@@ -22,6 +22,11 @@ struct Cli {
     #[arg(long, value_name = "SINCE")]
     since: Option<String>,
 
+    /// 합산에서 제외할 경로 glob. 반복 지정 가능 (예: `--exclude Cargo.lock --exclude '**/*.min.js'`).
+    /// glob은 레포 루트 기준 경로 전체에 매칭되며 `*`는 `/`를 넘지 않는다(중첩은 `**` 사용).
+    #[arg(long, value_name = "GLOB")]
+    exclude: Vec<String>,
+
     /// 보조 서브커맨드. 없으면 기본 동작(오늘 합산 출력).
     #[command(subcommand)]
     command: Option<Command>,
@@ -67,10 +72,13 @@ fn run() -> anyhow::Result<()> {
     let today = now.date();
 
     // --since가 있으면 그 Window를, 없으면 오늘 Window를 코어에 넘긴다.
-    let tally = match cli.since.as_deref() {
-        Some(spec) => just_tic::tally_in(&repo, &parse_since(spec, &now)?)?,
-        None => just_tic::tally(&repo, now)?,
+    let window = match cli.since.as_deref() {
+        Some(spec) => parse_since(spec, &now)?,
+        None => just_tic::Window::for_day(now),
     };
+    // --exclude glob들을 매처로 컴파일해 코어에 주입 (ADR-0006: 매칭 정책은 CLI 몫).
+    let exclude = build_exclude(&cli.exclude)?;
+    let tally = just_tic::tally_in(&repo, &window, &exclude)?;
     if cli.json {
         // JSON은 항상 색 없음 — 기계 판독·jq 안전.
         println!("{}", tally.to_json_line(today));
@@ -112,6 +120,21 @@ fn parse_since(spec: &str, now: &jiff::Zoned) -> anyhow::Result<just_tic::Window
         anyhow::anyhow!("--since 형식이 올바르지 않습니다: '{spec}' (YYYY-MM-DD 또는 7d/24h/2w)")
     })?;
     just_tic::Window::since_local_date(date, now)
+}
+
+/// `--exclude` glob들을 경로 제외 술어로 컴파일한다.
+///
+/// 빈 목록이면 아무것도 제외하지 않는다. glob 컴파일은 CLI 관심사라 여기서 처리하고
+/// (ADR-0006), 코어엔 `Fn(&str) -> bool` 술어만 넘긴다. 잘못된 glob은 친절한 에러.
+fn build_exclude(globs: &[String]) -> anyhow::Result<impl Fn(&str) -> bool> {
+    let mut builder = globset::GlobSetBuilder::new();
+    for g in globs {
+        let glob = globset::Glob::new(g)
+            .with_context(|| format!("--exclude: 잘못된 glob '{g}'"))?;
+        builder.add(glob);
+    }
+    let set = builder.build().context("--exclude glob 컴파일 실패")?;
+    Ok(move |path: &str| set.is_match(path))
 }
 
 /// `Nd`/`Nh`/`Nw` 기간 문자열을 초로 변환한다. 형식이 아니면 `None`(날짜로 재시도).
