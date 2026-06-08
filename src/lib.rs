@@ -3,6 +3,7 @@
 //! 코어는 시계를 직접 읽지 않는다 — 호출자가 `now`를 주입한다. 그래야 테스트가
 //! 고정된 시각으로 자정 경계·DST를 결정적으로 검증할 수 있다.
 
+use gix::bstr::ByteSlice;
 use jiff::civil::Date;
 use jiff::{SignedDuration, Timestamp, Zoned};
 use serde::Serialize;
@@ -79,15 +80,21 @@ impl Tally {
 /// (--no-merges). 커밋별 diff는 rename(유사도) 감지를 켠다 — 파일/폴더 이동이
 /// 줄 수를 부풀리지 않게(#5).
 pub fn tally(repo: &gix::Repository, now: Zoned) -> anyhow::Result<Tally> {
-    tally_in(repo, &Window::for_day(now))
+    tally_in(repo, &Window::for_day(now), &|_| false)
 }
 
-/// [`tally`]의 일반형 — "오늘" 대신 임의 [`Window`]를 주입받아 그 구간의 커밋을 합산한다.
+/// [`tally`]의 일반형 — 임의 [`Window`]와 경로 제외 술어를 주입받아 합산한다.
 ///
-/// `tally(repo, now)`는 `tally_in(repo, &Window::for_day(now))`와 같다. `--since` 같은
-/// 임의 기간 집계는 호출자가 Window를 만들어 이 함수에 넘긴다([`Window::since_local_date`],
-/// [`Window::since_ago`]). 커밋 선택·머지 skip·rename·합산 규칙은 [`tally`]와 동일하다.
-pub fn tally_in(repo: &gix::Repository, window: &Window) -> anyhow::Result<Tally> {
+/// `tally(repo, now)`는 `tally_in(repo, &Window::for_day(now), &|_| false)`와 같다.
+/// `--since` 같은 임의 기간은 호출자가 Window를 만들어 넘기고([`Window::since_local_date`],
+/// [`Window::since_ago`]), `--exclude` 같은 잡음 필터는 `exclude` 술어로 표현한다 —
+/// `exclude(path)`가 `true`면 그 파일의 줄 기여를 제외한다(ADR-0006: 매칭 정책은 호출자 몫).
+/// 커밋 선택·머지 skip·rename 규칙은 [`tally`]와 동일하다.
+pub fn tally_in(
+    repo: &gix::Repository,
+    window: &Window,
+    exclude: &dyn Fn(&str) -> bool,
+) -> anyhow::Result<Tally> {
     let mut total = Tally::default();
 
     // 로컬 브랜치(refs/heads/*) tip 전부를 순회 시작점으로 모은다.
@@ -130,7 +137,7 @@ pub fn tally_in(repo: &gix::Repository, window: &Window) -> anyhow::Result<Tally
 
         // #2 범위: 머지 커밋도 포함(첫 부모 대비 diff). 머지 skip은 #4.
         let (additions, deletions) =
-            numstat_against_first_parent(repo, &commit, &mut diff_cache)?;
+            numstat_against_first_parent(repo, &commit, &mut diff_cache, exclude)?;
         total.additions += additions;
         total.deletions += deletions;
     }
@@ -151,6 +158,7 @@ fn numstat_against_first_parent(
     repo: &gix::Repository,
     commit: &gix::Commit<'_>,
     diff_cache: &mut gix::diff::blob::Platform,
+    exclude: &dyn Fn(&str) -> bool,
 ) -> anyhow::Result<(u64, u64)> {
     let new_tree = commit.tree()?;
     let old_tree = match commit.parent_ids().next() {
@@ -172,6 +180,10 @@ fn numstat_against_first_parent(
         let cont = std::ops::ControlFlow::Continue(());
         if change.entry_mode().is_tree() {
             return Ok::<_, Box<dyn std::error::Error + Send + Sync>>(cont);
+        }
+        // 제외 glob에 맞는 경로는 줄 기여를 빼고 건너뛴다(--exclude). diff 계산 전에 거른다.
+        if exclude(&change.location().to_str_lossy()) {
+            return Ok(cont);
         }
         if let Some(stats) = change.diff(diff_cache)?.line_counts()? {
             additions += u64::from(stats.insertions);
