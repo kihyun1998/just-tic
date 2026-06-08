@@ -71,6 +71,21 @@ impl Tally {
     }
 }
 
+/// [`tally_in`] 동작 옵션. 기본값(`tally`)은 머지 skip · author date · 제외 없음.
+pub struct Options<'a> {
+    /// `exclude(path)`가 `true`면 그 파일의 줄 기여를 제외한다(--exclude). 정책은 호출자 몫(ADR-0006).
+    pub exclude: &'a dyn Fn(&str) -> bool,
+    /// `true`면 머지 커밋을 skip하지 않고 first-parent diff로 집계하며, 순회도 first-parent만 따른다(--first-parent).
+    pub first_parent: bool,
+    /// `true`면 "오늘" 멤버십을 author date 대신 committer date로 판정한다(--committer-date).
+    pub committer_date: bool,
+}
+
+/// 아무 경로도 제외하지 않는 기본 술어([`tally`]·테스트용).
+fn never_exclude(_: &str) -> bool {
+    false
+}
+
 /// 현재 레포에서 `now` 기준 "오늘"(로컬 자정~now) author date 커밋들의 numstat을 합산한다.
 ///
 /// 시계는 호출자가 `now`로 주입한다 — 코어는 시계를 읽지 않는다.
@@ -80,20 +95,26 @@ impl Tally {
 /// (--no-merges). 커밋별 diff는 rename(유사도) 감지를 켠다 — 파일/폴더 이동이
 /// 줄 수를 부풀리지 않게(#5).
 pub fn tally(repo: &gix::Repository, now: Zoned) -> anyhow::Result<Tally> {
-    tally_in(repo, &Window::for_day(now), &|_| false)
+    tally_in(
+        repo,
+        &Window::for_day(now),
+        &Options {
+            exclude: &never_exclude,
+            first_parent: false,
+            committer_date: false,
+        },
+    )
 }
 
-/// [`tally`]의 일반형 — 임의 [`Window`]와 경로 제외 술어를 주입받아 합산한다.
+/// [`tally`]의 일반형 — 임의 [`Window`]와 [`Options`]를 주입받아 합산한다.
 ///
-/// `tally(repo, now)`는 `tally_in(repo, &Window::for_day(now), &|_| false)`와 같다.
-/// `--since` 같은 임의 기간은 호출자가 Window를 만들어 넘기고([`Window::since_local_date`],
-/// [`Window::since_ago`]), `--exclude` 같은 잡음 필터는 `exclude` 술어로 표현한다 —
-/// `exclude(path)`가 `true`면 그 파일의 줄 기여를 제외한다(ADR-0006: 매칭 정책은 호출자 몫).
-/// 커밋 선택·머지 skip·rename 규칙은 [`tally`]와 동일하다.
+/// `tally(repo, now)`는 기본 [`Options`]로 이 함수를 부른 것과 같다. `--since`는 호출자가
+/// Window를 만들어 넘기고([`Window::since_local_date`], [`Window::since_ago`]), `--exclude`·
+/// `--first-parent`·`--committer-date`는 [`Options`]로 표현한다(ADR-0006: 정책은 호출자 몫).
 pub fn tally_in(
     repo: &gix::Repository,
     window: &Window,
-    exclude: &dyn Fn(&str) -> bool,
+    opts: &Options<'_>,
 ) -> anyhow::Result<Tally> {
     let mut total = Tally::default();
 
@@ -117,27 +138,36 @@ pub fn tally_in(
     // 블롭 라인 diff용 캐시 — 트리 순회 캐시와 별개로 한 번 만들어 재사용한다.
     let mut diff_cache = repo.diff_resource_cache_for_tree_diff()?;
 
-    // 모든 tip에서 단일 multi-tip revwalk — 공유 커밋은 commit id로 한 번만 방문(dedup).
-    for info in repo.rev_walk(tips).all()? {
+    // 모든 tip에서 multi-tip revwalk — 공유 커밋은 commit id로 한 번만 방문(dedup).
+    // --first-parent면 first-parent 체인만 따라가, 사이드 브랜치 커밋의 이중 카운트를 막는다.
+    let mut walk = repo.rev_walk(tips);
+    if opts.first_parent {
+        walk = walk.first_parent_only();
+    }
+    for info in walk.all()? {
         let commit = repo.find_commit(info?.id)?;
 
-        // 머지 커밋(부모 2개 이상)은 완전 제외 — numstat·commits 둘 다 빼고 건너뛴다.
-        // git log --no-merges와 일치. 머지가 가져온 줄은 원본 커밋에서 이미 세므로
-        // 재카운트를 막는다. (충돌 해결로 머지에만 있는 줄은 집계 안 됨 — 수용된 한계.)
-        if commit.parent_ids().take(2).count() > 1 {
+        // 기본 모드: 머지 커밋(부모 2+)을 완전 제외(--no-merges)해 재카운트를 막는다.
+        // --first-parent 모드: skip하지 않고 first-parent diff로 머지가 가져온 순변경을 센다.
+        if !opts.first_parent && commit.parent_ids().take(2).count() > 1 {
             continue;
         }
 
-        // author date(UTC 인스턴트)가 오늘 구간에 속하지 않으면 건너뛴다.
-        let authored = Timestamp::from_second(commit.author()?.time()?.seconds)?;
-        if !window.contains(authored) {
+        // 멤버십 판정 시각(UTC 인스턴트). 기본 author date, --committer-date면 committer date.
+        let signature = if opts.committer_date {
+            commit.committer()?
+        } else {
+            commit.author()?
+        };
+        let when = Timestamp::from_second(signature.time()?.seconds)?;
+        if !window.contains(when) {
             continue;
         }
         total.commits += 1;
 
         // #2 범위: 머지 커밋도 포함(첫 부모 대비 diff). 머지 skip은 #4.
         let (additions, deletions) =
-            numstat_against_first_parent(repo, &commit, &mut diff_cache, exclude)?;
+            numstat_against_first_parent(repo, &commit, &mut diff_cache, opts.exclude)?;
         total.additions += additions;
         total.deletions += deletions;
     }

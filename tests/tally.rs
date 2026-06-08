@@ -430,3 +430,105 @@ fn directory_move_does_not_inflate_numbers() {
     assert_eq!(result.additions, 0, "디렉터리 이동은 숫자를 부풀리지 않는다");
     assert_eq!(result.deletions, 0);
 }
+
+#[test]
+fn committer_date_mode_uses_committer_instead_of_author() {
+    let dir = init_repo();
+    let p = dir.path();
+
+    // author=어제(6/4), committer=오늘(6/5)인 커밋 — rebase/amend 흉내. 3줄.
+    std::fs::write(p.join("a.txt"), "1\n2\n3\n").unwrap();
+    git(p, &["add", "a.txt"], None);
+    let out = Command::new("git")
+        .current_dir(p)
+        .args(["commit", "-m", "split"])
+        .env("GIT_AUTHOR_DATE", "2026-06-04T09:00:00+00:00")
+        .env("GIT_COMMITTER_DATE", "2026-06-05T09:00:00+00:00")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "split 커밋 실패");
+
+    let repo = gix::open(p).unwrap();
+    let window = just_tic::Window::for_day(now_utc(2026, 6, 5, 12, 0));
+    let never = |_: &str| false;
+
+    // 기본(author=6/4)이면 오늘(6/5) 구간 밖 → 0커밋.
+    let by_author = just_tic::tally_in(
+        &repo,
+        &window,
+        &just_tic::Options {
+            exclude: &never,
+            first_parent: false,
+            committer_date: false,
+        },
+    )
+    .unwrap();
+    assert_eq!(by_author.commits, 0, "author date(어제)면 오늘 구간 밖");
+
+    // --committer-date(committer=6/5)면 오늘 구간 안 → 1커밋·3줄.
+    let by_committer = just_tic::tally_in(
+        &repo,
+        &window,
+        &just_tic::Options {
+            exclude: &never,
+            first_parent: false,
+            committer_date: true,
+        },
+    )
+    .unwrap();
+    assert_eq!(by_committer.commits, 1, "committer date(오늘)면 포함");
+    assert_eq!(by_committer.additions, 3);
+}
+
+#[test]
+fn first_parent_mode_counts_merge_and_skips_side_branch_commits() {
+    let dir = init_repo();
+    let p = dir.path();
+    let today = "2026-06-05T09:00:00+00:00";
+
+    // base(어제, 제외) → m1(오늘 2줄) on main.
+    commit_file(p, "base.txt", "b\n", "2026-06-04T09:00:00+00:00");
+    commit_file(p, "m1.txt", "1\n2\n", today);
+
+    // feature에서 f1(3줄)·f2(4줄) 오늘.
+    git(p, &["checkout", "-b", "feature"], None);
+    commit_file(p, "f1.txt", "a\nb\nc\n", today);
+    commit_file(p, "f2.txt", "w\nx\ny\nz\n", today);
+
+    // main으로 돌아와 --no-ff 머지(오늘) 후 feature 브랜치 삭제(머지 완료 후 정리).
+    git(p, &["checkout", "main"], None);
+    git(p, &["merge", "--no-ff", "feature", "-m", "merge"], Some(today));
+    git(p, &["branch", "-d", "feature"], None);
+
+    let repo = gix::open(p).unwrap();
+    let window = just_tic::Window::for_day(now_utc(2026, 6, 5, 12, 0));
+    let never = |_: &str| false;
+
+    // 기본: 머지 skip → 개별 커밋 m1·f1·f2 = 3커밋, +9.
+    let default = just_tic::tally_in(
+        &repo,
+        &window,
+        &just_tic::Options {
+            exclude: &never,
+            first_parent: false,
+            committer_date: false,
+        },
+    )
+    .unwrap();
+    assert_eq!(default.commits, 3, "기본은 m1·f1·f2 (머지 skip)");
+    assert_eq!(default.additions, 9);
+
+    // --first-parent: M·m1만 (f1·f2는 사이드 브랜치라 미방문) = 2커밋. M의 first-parent diff가 f1·f2 합을 포함해 +9.
+    let fp = just_tic::tally_in(
+        &repo,
+        &window,
+        &just_tic::Options {
+            exclude: &never,
+            first_parent: true,
+            committer_date: false,
+        },
+    )
+    .unwrap();
+    assert_eq!(fp.commits, 2, "first-parent는 M·m1 (사이드 브랜치 미방문)");
+    assert_eq!(fp.additions, 9, "M의 first-parent diff가 f1·f2 합을 포함");
+}
