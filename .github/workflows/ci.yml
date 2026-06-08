@@ -14,9 +14,15 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
+# 모든 run 스텝을 bash로 통일 — Windows 러너에서도 같은 문법을 쓴다.
+defaults:
+  run:
+    shell: bash
+
 jobs:
-  test:
-    name: clippy + test
+  # clippy는 플랫폼 독립적이라 한 OS(ubuntu)에서만 돌려 중복을 피한다.
+  lint:
+    name: clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -27,6 +33,20 @@ jobs:
       # 경고를 에러로 승격 — clippy 경고가 있으면 CI 실패.
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
+
+  # 테스트는 jtic이 배포되는 모든 OS에서 — gix 등 플랫폼별 동작 차이를 머지 전에 잡는다.
+  test:
+    name: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false # 한 OS가 깨져도 나머지 OS 결과를 끝까지 본다.
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        run: rustup update stable
 
       - name: Test
         run: cargo test
