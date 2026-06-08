@@ -17,6 +17,11 @@ struct Cli {
     #[arg(long)]
     json: bool,
 
+    /// 집계 시작 시점. 날짜 `YYYY-MM-DD`(그 날 자정부터) 또는 기간 `7d`/`24h`/`2w`(지난 N).
+    /// 생략하면 오늘(로컬 자정부터). 상한은 항상 현재 시각.
+    #[arg(long, value_name = "SINCE")]
+    since: Option<String>,
+
     /// 보조 서브커맨드. 없으면 기본 동작(오늘 합산 출력).
     #[command(subcommand)]
     command: Option<Command>,
@@ -58,10 +63,14 @@ fn run() -> anyhow::Result<()> {
 
     // 시스템 로컬 타임존의 현재 시각 — 코어에 주입한다.
     let now = jiff::Zoned::now();
-    // JSON의 `date`는 로컬 "오늘" 날짜 — Window 하한과 같은 기준.
+    // JSON의 `date`는 리포트 생성 시점(오늘) — Window 하한이 아니라 "as of" 기준.
     let today = now.date();
 
-    let tally = just_tic::tally(&repo, now)?;
+    // --since가 있으면 그 Window를, 없으면 오늘 Window를 코어에 넘긴다.
+    let tally = match cli.since.as_deref() {
+        Some(spec) => just_tic::tally_in(&repo, &parse_since(spec, &now)?)?,
+        None => just_tic::tally(&repo, now)?,
+    };
     if cli.json {
         // JSON은 항상 색 없음 — 기계 판독·jq 안전.
         println!("{}", tally.to_json_line(today));
@@ -88,6 +97,39 @@ fn emit(command: &Command) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// `--since` 인자를 [`just_tic::Window`]로 파싱한다.
+///
+/// 두 형식을 받는다(ADR-0006: 입력 형식은 CLI 관심사라 여기서 해석):
+/// - `YYYY-MM-DD` → 그 날 로컬 자정부터 (달력 경계, [`Window::since_local_date`])
+/// - `Nd`/`Nh`/`Nw` → 지금부터 N 전까지 (롤링, [`Window::since_ago`])
+fn parse_since(spec: &str, now: &jiff::Zoned) -> anyhow::Result<just_tic::Window> {
+    if let Some(secs) = parse_ago_seconds(spec) {
+        return just_tic::Window::since_ago(jiff::SignedDuration::from_secs(secs), now);
+    }
+    let date: jiff::civil::Date = spec.parse().map_err(|_| {
+        anyhow::anyhow!("--since 형식이 올바르지 않습니다: '{spec}' (YYYY-MM-DD 또는 7d/24h/2w)")
+    })?;
+    just_tic::Window::since_local_date(date, now)
+}
+
+/// `Nd`/`Nh`/`Nw` 기간 문자열을 초로 변환한다. 형식이 아니면 `None`(날짜로 재시도).
+///
+/// 단위: `h`=시간, `d`=일, `w`=주. 절대 기간이라 달력/DST와 무관하다.
+fn parse_ago_seconds(spec: &str) -> Option<i64> {
+    let (&unit, num) = spec.as_bytes().split_last()?;
+    if num.is_empty() || !num.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    let n: i64 = spec[..spec.len() - 1].parse().ok()?;
+    let unit_secs: i64 = match unit {
+        b'h' => 3_600,
+        b'd' => 86_400,
+        b'w' => 604_800,
+        _ => return None,
+    };
+    n.checked_mul(unit_secs)
 }
 
 /// 휴먼 출력에 ANSI 색을 입힐지 결정한다(순수 함수 — 테스트 가능).

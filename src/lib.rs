@@ -4,7 +4,7 @@
 //! 고정된 시각으로 자정 경계·DST를 결정적으로 검증할 수 있다.
 
 use jiff::civil::Date;
-use jiff::{Timestamp, Zoned};
+use jiff::{SignedDuration, Timestamp, Zoned};
 use serde::Serialize;
 
 /// 오늘 합산 결과: 추가/삭제 줄 수와 집계에 포함된 커밋 수.
@@ -79,7 +79,15 @@ impl Tally {
 /// (--no-merges). 커밋별 diff는 rename(유사도) 감지를 켠다 — 파일/폴더 이동이
 /// 줄 수를 부풀리지 않게(#5).
 pub fn tally(repo: &gix::Repository, now: Zoned) -> anyhow::Result<Tally> {
-    let window = Window::for_day(now);
+    tally_in(repo, &Window::for_day(now))
+}
+
+/// [`tally`]의 일반형 — "오늘" 대신 임의 [`Window`]를 주입받아 그 구간의 커밋을 합산한다.
+///
+/// `tally(repo, now)`는 `tally_in(repo, &Window::for_day(now))`와 같다. `--since` 같은
+/// 임의 기간 집계는 호출자가 Window를 만들어 이 함수에 넘긴다([`Window::since_local_date`],
+/// [`Window::since_ago`]). 커밋 선택·머지 skip·rename·합산 규칙은 [`tally`]와 동일하다.
+pub fn tally_in(repo: &gix::Repository, window: &Window) -> anyhow::Result<Tally> {
     let mut total = Tally::default();
 
     // 로컬 브랜치(refs/heads/*) tip 전부를 순회 시작점으로 모은다.
@@ -194,6 +202,28 @@ impl Window {
             .expect("local day start within representable range")
             .timestamp();
         Window { start, end }
+    }
+
+    /// `date`의 **로컬 자정**부터 `now`까지의 구간 `[date 자정, now)`.
+    ///
+    /// 달력 경계 기준 — `--since 2026-06-01`처럼 "그 날부터"를 표현한다. 자정은 `now`의
+    /// 타임존에서 그 날의 첫 인스턴트로 계산해 DST를 올바로 다룬다(ADR-0001).
+    pub fn since_local_date(date: Date, now: &Zoned) -> anyhow::Result<Self> {
+        let start = date.to_zoned(now.time_zone().clone())?.timestamp();
+        Ok(Window {
+            start,
+            end: now.timestamp(),
+        })
+    }
+
+    /// `now`로부터 `ago`(절대 기간) 전부터 `now`까지의 롤링 구간 `[now - ago, now)`.
+    ///
+    /// `--since 7d`/`24h`처럼 "지난 N" 을 표현한다. 달력이 아닌 절대 기간이라 DST와 무관하게
+    /// 정확히 N만큼 거슬러 올라간다.
+    pub fn since_ago(ago: SignedDuration, now: &Zoned) -> anyhow::Result<Self> {
+        let end = now.timestamp();
+        let start = end.checked_sub(ago)?;
+        Ok(Window { start, end })
     }
 
     /// `instant`가 `[start, end)`에 속하는가? (하한 닫힘, 상한 열림)
@@ -363,5 +393,63 @@ mod tests {
             .unwrap()
             .timestamp();
         assert!(!window.contains(yesterday));
+    }
+
+    #[test]
+    fn since_local_date_starts_at_that_days_midnight() {
+        let now = date(2026, 6, 5)
+            .at(12, 0, 0, 0)
+            .in_tz("America/New_York")
+            .unwrap();
+        let window = Window::since_local_date(date(2026, 6, 3), &now).unwrap();
+
+        // 시작일(6/3) 자정은 포함 — 하한 닫힘.
+        let start_midnight = date(2026, 6, 3)
+            .at(0, 0, 0, 0)
+            .in_tz("America/New_York")
+            .unwrap()
+            .timestamp();
+        assert!(window.contains(start_midnight), "시작일 자정은 포함");
+
+        // 시작일 이전(6/2 밤)은 제외.
+        let before = date(2026, 6, 2)
+            .at(23, 0, 0, 0)
+            .in_tz("America/New_York")
+            .unwrap()
+            .timestamp();
+        assert!(!window.contains(before), "시작일 이전은 제외");
+
+        // 구간 안(6/4)은 포함.
+        let inside = date(2026, 6, 4)
+            .at(9, 0, 0, 0)
+            .in_tz("America/New_York")
+            .unwrap()
+            .timestamp();
+        assert!(window.contains(inside));
+    }
+
+    #[test]
+    fn since_ago_is_a_rolling_window_from_now() {
+        let now = date(2026, 6, 5)
+            .at(12, 0, 0, 0)
+            .in_tz("America/New_York")
+            .unwrap();
+        let window = Window::since_ago(SignedDuration::from_hours(24), &now).unwrap();
+
+        // 23시간 전(어제 13:00)은 포함 — 24h 안쪽.
+        let within = date(2026, 6, 4)
+            .at(13, 0, 0, 0)
+            .in_tz("America/New_York")
+            .unwrap()
+            .timestamp();
+        assert!(window.contains(within), "24h 안쪽은 포함");
+
+        // 25시간 전(어제 11:00)은 제외 — 24h 밖.
+        let outside = date(2026, 6, 4)
+            .at(11, 0, 0, 0)
+            .in_tz("America/New_York")
+            .unwrap()
+            .timestamp();
+        assert!(!window.contains(outside), "24h 밖은 제외");
     }
 }
