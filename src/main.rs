@@ -72,8 +72,13 @@ fn run() -> anyhow::Result<()> {
     }
 
     // 현재 위치에서 상위로 올라가며 레포를 찾는다.
-    let repo = gix::discover(".")
+    let mut repo = gix::discover(".")
         .context("git 레포를 찾지 못했습니다 (현재 위치나 상위 경로에 .git이 없습니다)")?;
+    // diff용 object cache — 인접 커밋들이 공유하는 tree/blob을 메모리에 재사용한다(#35).
+    // 합산 결과는 불변(순수 메모이제이션)이고, window 안 커밋이 많을 때 30~40% 빨라진다.
+    // 64MiB면 충분(실측상 256MiB와 차이 없음). 캐시는 환경 정책이라 코어가 아닌 CLI에서
+    // 설정한다(ADR-0006) — 코어는 `&gix::Repository`를 받을 뿐 캐시 유무를 모른다.
+    repo.object_cache_size_if_unset(64 * 1024 * 1024);
 
     // 시스템 로컬 타임존의 현재 시각 — 코어에 주입한다.
     let now = jiff::Zoned::now();
