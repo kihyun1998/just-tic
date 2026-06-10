@@ -1,6 +1,6 @@
 [package]
 name = "just-tic"
-version = "1.2.0"
+version = "1.2.1"
 edition = "2024"
 description = "오늘(로컬 타임존 자정~지금) git 커밋들에서 추가/삭제한 줄 수(+/-)를 한 줄로 보여주는 CLI"
 authors = ["Ki Hyun Park"]
